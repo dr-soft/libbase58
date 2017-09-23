@@ -5,11 +5,7 @@
  * under the terms of the standard MIT license.  See COPYING for more details.
  */
 
-#ifndef WIN32
-#include <arpa/inet.h>
-#else
-#include <winsock2.h>
-#endif
+#include "libbase58.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -17,7 +13,13 @@
 #include <string.h>
 #include <sys/types.h>
 
-#include "libbase58.h"
+#ifdef _MSC_VER
+#include <malloc.h>
+#define b58_alloca _alloca
+#else
+#include <alloca.h>
+#define b58_alloca alloca
+#endif
 
 bool (*b58_sha256_impl)(void *, const void *, size_t) = NULL;
 
@@ -35,10 +37,10 @@ static const int8_t b58digits_map[] = {
 bool b58tobin(void *bin, size_t *binszp, const char *b58, size_t b58sz)
 {
 	size_t binsz = *binszp;
-	const unsigned char *b58u = (void*)b58;
-	unsigned char *binu = bin;
+	const unsigned char *b58u = (const unsigned char*)b58;
+	unsigned char *binu = (unsigned char*)bin;
 	size_t outisz = (binsz + 3) / 4;
-	uint32_t outi[outisz];
+	uint32_t* outi;
 	uint64_t t;
 	uint32_t c;
 	size_t i, j;
@@ -49,6 +51,7 @@ bool b58tobin(void *bin, size_t *binszp, const char *b58, size_t b58sz)
 	if (!b58sz)
 		b58sz = strlen(b58);
 	
+    outi = (uint32_t*)b58_alloca(outisz * sizeof(uint32_t));
 	memset(outi, 0, outisz * sizeof(*outi));
 	
 	// Leading zeros, just count
@@ -81,11 +84,11 @@ bool b58tobin(void *bin, size_t *binszp, const char *b58, size_t b58sz)
 	j = 0;
 	switch (bytesleft) {
 		case 3:
-			*(binu++) = (outi[0] &   0xff0000) >> 16;
+			*(binu++) = (unsigned char)((outi[0] &   0xff0000) >> 16);
 		case 2:
-			*(binu++) = (outi[0] &     0xff00) >>  8;
+			*(binu++) = (unsigned char)((outi[0] &     0xff00) >>  8);
 		case 1:
-			*(binu++) = (outi[0] &       0xff);
+			*(binu++) = (unsigned char)((outi[0] &       0xff));
 			++j;
 		default:
 			break;
@@ -100,7 +103,7 @@ bool b58tobin(void *bin, size_t *binszp, const char *b58, size_t b58sz)
 	}
 	
 	// Count canonical base58 byte count
-	binu = bin;
+	binu = (unsigned char*)bin;
 	for (i = 0; i < binsz; ++i)
 	{
 		if (binu[i])
@@ -121,8 +124,10 @@ bool my_dblsha256(void *hash, const void *data, size_t datasz)
 
 int b58check(const void *bin, size_t binsz, const char *base58str, size_t b58sz)
 {
+    (void)b58sz;
+
 	unsigned char buf[32];
-	const uint8_t *binc = bin;
+	const uint8_t *binc = (const uint8_t*)bin;
 	unsigned i;
 	if (binsz < 4)
 		return -4;
@@ -144,19 +149,19 @@ static const char b58digits_ordered[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdef
 
 bool b58enc(char *b58, size_t *b58sz, const void *data, size_t binsz)
 {
-	const uint8_t *bin = data;
+	const uint8_t *bin = (const uint8_t*)data;
 	int carry;
-	ssize_t i, j, high, zcount = 0;
+	intptr_t i, j, high, zcount = 0;
 	size_t size;
 	
-	while (zcount < binsz && !bin[zcount])
+	while ((size_t)zcount < binsz && !bin[zcount])
 		++zcount;
 	
 	size = (binsz - zcount) * 138 / 100 + 1;
-	uint8_t buf[size];
+	uint8_t* buf = (uint8_t*)b58_alloca(size);
 	memset(buf, 0, size);
 	
-	for (i = zcount, high = size - 1; i < binsz; ++i, high = j)
+	for (i = zcount, high = (intptr_t)size - 1; i < (intptr_t)binsz; ++i, high = j)
 	{
 		for (carry = bin[i], j = size - 1; (j > high) || carry; --j)
 		{
@@ -166,7 +171,7 @@ bool b58enc(char *b58, size_t *b58sz, const void *data, size_t binsz)
 		}
 	}
 	
-	for (j = 0; j < size && !buf[j]; ++j);
+	for (j = 0; j < (intptr_t)size && !buf[j]; ++j);
 	
 	if (*b58sz <= zcount + size - j)
 	{
@@ -176,7 +181,7 @@ bool b58enc(char *b58, size_t *b58sz, const void *data, size_t binsz)
 	
 	if (zcount)
 		memset(b58, '1', zcount);
-	for (i = zcount; j < size; ++i, ++j)
+	for (i = zcount; j < (intptr_t)size; ++i, ++j)
 		b58[i] = b58digits_ordered[buf[j]];
 	b58[i] = '\0';
 	*b58sz = i + 1;
@@ -184,10 +189,10 @@ bool b58enc(char *b58, size_t *b58sz, const void *data, size_t binsz)
 	return true;
 }
 
-bool b58check_enc(char *b58c, size_t *b58c_sz, uint8_t ver, const void *data, size_t datasz)
+bool b58check_enc(char *b58c, size_t *b58c_sz, unsigned char ver, const void *data, size_t datasz)
 {
-	uint8_t buf[1 + datasz + 0x20];
-	uint8_t *hash = &buf[1 + datasz];
+	uint8_t* buf = (uint8_t*)b58_alloca(1 + datasz + 0x20);
+	uint8_t* hash = &buf[1 + datasz];
 	
 	buf[0] = ver;
 	memcpy(&buf[1], data, datasz);
